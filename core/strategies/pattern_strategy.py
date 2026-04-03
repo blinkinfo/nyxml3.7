@@ -232,32 +232,34 @@ class PatternStrategy(BaseStrategy):
         matched_depth: int | None = None
         pattern: str | None = None
         prediction: str | None = None
+        shallowest_pattern: str | None = None
 
         for d in self._PATTERN_DEPTHS:
             p = _build_pattern_string(candles, depth=d)
             if p is None:
                 continue
-            # Keep shallowest candidate so we always have one for skip logging.
-            pattern = p
+            # Track shallowest for skip logging.
+            shallowest_pattern = p
             pred = PATTERN_TABLE.get(p)
             if pred is not None and matched_depth is None:
                 matched_depth = d
                 prediction = pred
+                pattern = p
 
         if prediction is None:
-            # No match at any depth.  pattern holds the shallowest (last) attempt.
+            # No match at any depth.  Use shallowest_pattern for logging.
+            slot_n1 = get_next_slot_info()
             log.info(
                 "PatternStrategy: no match at any depth [%s] -> SKIP "
                 "(shallowest pattern '%s', slot %s-%s UTC)",
                 ", ".join(str(d) for d in self._PATTERN_DEPTHS),
-                pattern,
-                slot_n1 := get_next_slot_info(),
+                shallowest_pattern,
                 slot_n1["slot_start_str"],
                 slot_n1["slot_end_str"],
             )
             return {
                 "skipped": True,
-                "pattern": pattern,  # type: ignore[arg-type]
+                "pattern": shallowest_pattern,  # type: ignore[arg-type]
                 "candles_used": self._PATTERN_DEPTHS[-1],
                 "slot_n1_start_full": slot_n1["slot_start_full"],
                 "slot_n1_end_full":   slot_n1["slot_end_full"],
