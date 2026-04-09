@@ -68,7 +68,11 @@ def load_metadata(slot: str = "current") -> dict | None:
 
 
 def promote_candidate() -> None:
-    """Copy candidate model to current (overwrites current)."""
+    """Copy candidate model files to current slot on disk (overwrites current).
+
+    NOTE: This only updates disk files. Call promote_candidate_in_db() afterward
+    to also persist the promotion to the database so it survives container restarts.
+    """
     _ensure_dir()
     src_model = _model_path("candidate")
     src_meta = _meta_path("candidate")
@@ -82,7 +86,46 @@ def promote_candidate() -> None:
     if os.path.exists(src_meta):
         shutil.copy2(src_meta, dst_meta)
 
-    log.info("promote_candidate: copied candidate -> current")
+    log.info("promote_candidate: copied candidate -> current (disk only)")
+
+
+async def promote_candidate_in_db() -> None:
+    """Promote candidate model to current slot in the database.
+
+    Reads the candidate blob from the DB and writes it as the 'current' slot.
+    This must be called after promote_candidate() so the promoted model
+    survives container restarts on ephemeral filesystems (e.g. Railway).
+
+    Raises KeyError if no candidate blob exists in the DB.
+    """
+    import aiosqlite
+    import config as cfg
+
+    async with aiosqlite.connect(cfg.DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT blob, metadata FROM model_blobs WHERE slot = ?", ("candidate",)
+        )
+        row = await cursor.fetchone()
+
+    if not row:
+        raise KeyError("No candidate model found in DB — cannot promote to current")
+
+    blob, meta_json = row
+    async with aiosqlite.connect(cfg.DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO model_blobs (slot, blob, metadata)
+            VALUES (?, ?, ?)
+            ON CONFLICT(slot) DO UPDATE SET
+                blob=excluded.blob,
+                metadata=excluded.metadata,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            ("current", blob, meta_json),
+        )
+        await db.commit()
+
+    log.info("promote_candidate_in_db: candidate promoted to current in DB (%d bytes)", len(blob))
 
 
 def has_model(slot: str = "current") -> bool:

@@ -216,14 +216,21 @@ def main() -> None:
         # --- Step 7: Register bot commands so they appear in Telegram menu ---
         try:
             await application.bot.set_my_commands([
-                BotCommand("status",      "Portfolio overview & bot health"),
-                BotCommand("signals",     "Recent trading signals"),
-                BotCommand("trades",      "Open & recent trades"),
-                BotCommand("redeem",      "Scan & redeem winning positions"),
-                BotCommand("redemptions", "Redemption history"),
-                BotCommand("settings",    "View/adjust bot settings"),
-                BotCommand("demo",        "Demo trading & virtual bankroll"),
-                BotCommand("help",        "Show available commands"),
+                BotCommand("start",         "Show main menu"),
+                BotCommand("status",        "Bot & account status"),
+                BotCommand("signals",       "Signal history & stats"),
+                BotCommand("trades",        "Trade history & stats"),
+                BotCommand("patterns",      "Per-pattern performance"),
+                BotCommand("demo",          "Demo trading dashboard"),
+                BotCommand("redeem",        "Redeem settled positions"),
+                BotCommand("redemptions",   "Redemption history"),
+                BotCommand("settings",      "Bot settings"),
+                BotCommand("model_status",  "ML model info & metrics"),
+                BotCommand("model_compare", "Compare current vs candidate model"),
+                BotCommand("promote_model", "Promote candidate to current"),
+                BotCommand("retrain",       "Retrain ML model in background"),
+                BotCommand("set_threshold", "Set ML signal threshold (0.50-0.95)"),
+                BotCommand("help",          "Help & command reference"),
             ])
         except Exception:
             log.exception("post_init: set_my_commands failed (non-fatal) — continuing startup")

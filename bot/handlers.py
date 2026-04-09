@@ -605,7 +605,12 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 reply_markup=ml_menu(),
             )
         else:
+            # Promote on disk first, then persist to DB so it survives container restarts
             model_store.promote_candidate()
+            try:
+                await model_store.promote_candidate_in_db()
+            except Exception:
+                log.exception("ml_promote_anyway: failed to persist promotion to DB (disk promote succeeded)")
             request_model_reload()
             meta = model_store.load_metadata("current") or {}
             threshold = await queries.get_ml_threshold()
@@ -889,29 +894,6 @@ def register(application) -> None:
     application.add_handler(CallbackQueryHandler(callback_router))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    # Register command list with Telegram (shown in the "/" menu button)
-    async def _set_commands(app):
-        from telegram import BotCommand
-        await app.bot.set_my_commands([
-            BotCommand("start",         "Show main menu"),
-            BotCommand("status",        "Bot & account status"),
-            BotCommand("signals",       "Signal history & stats"),
-            BotCommand("trades",        "Trade history & stats"),
-            BotCommand("patterns",      "Per-pattern performance"),
-            BotCommand("demo",          "Demo trading dashboard"),
-            BotCommand("redeem",        "Redeem settled positions"),
-            BotCommand("redemptions",   "Redemption history"),
-            BotCommand("settings",      "Bot settings"),
-            BotCommand("model_status",  "ML model info & metrics"),
-            BotCommand("model_compare", "Compare current vs candidate model"),
-            BotCommand("promote_model", "Promote candidate to current"),
-            BotCommand("retrain",       "Retrain ML model in background"),
-            BotCommand("set_threshold", "Set ML signal threshold (0.50-0.95)"),
-            BotCommand("help",          "Help & command reference"),
-        ])
-
-    application.post_init = _set_commands
-
     async def _error_handler(update, context):
         import traceback
         err_text = "".join(traceback.format_exception(type(context.error), context.error, context.error.__traceback__))
@@ -1001,7 +983,7 @@ async def cmd_model_compare(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 @auth_check
 async def cmd_promote_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Promote candidate model to current."""
+    """Promote candidate model to current (disk + DB)."""
     from ml import model_store
     from core.strategies.ml_strategy import request_model_reload
     if update.callback_query:
@@ -1012,7 +994,12 @@ async def cmd_promote_model(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not model_store.has_model("candidate"):
         await send("No candidate model to promote. Use /retrain first.", parse_mode="HTML")
         return
+    # Promote on disk first, then persist to DB so it survives container restarts
     model_store.promote_candidate()
+    try:
+        await model_store.promote_candidate_in_db()
+    except Exception:
+        log.exception("cmd_promote_model: failed to persist promotion to DB (disk promote succeeded)")
     request_model_reload()
     meta = model_store.load_metadata("current")
     threshold = await queries.get_ml_threshold()
