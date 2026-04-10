@@ -658,6 +658,17 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         context.user_data["awaiting_ml_threshold"] = True
 
+    elif data == "ml_set_down_threshold":
+        await query.answer()
+        threshold = await queries.get_ml_down_threshold()
+        await _safe_edit(
+            query,
+            f"\u2699\ufe0f <b>Set ML DOWN Threshold</b>\n\nCurrent DOWN threshold: <b>{threshold:.3f}</b>\n\n"
+            "Type the new DOWN threshold value (0.50 \u2013 0.95):\n"
+            "Example: <code>0.48</code>",
+        )
+        context.user_data["awaiting_ml_down_threshold"] = True
+
     else:
         await query.answer("Unknown action")
 
@@ -812,6 +823,28 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await queries.set_ml_threshold(threshold)
         await update.message.reply_text(
             f"\u2705 ML threshold set to <b>{threshold:.3f}</b>. Active on next signal check.",
+            parse_mode="HTML",
+            reply_markup=ml_menu(),
+        )
+        return
+
+    # -- ML DOWN threshold input ---------------------------------------------------
+    if context.user_data.get("awaiting_ml_down_threshold"):
+        context.user_data["awaiting_ml_down_threshold"] = False
+        raw = update.message.text.strip()
+        try:
+            threshold = float(raw)
+            if not (0.50 <= threshold <= 0.95):
+                raise ValueError("out of range")
+        except ValueError:
+            await update.message.reply_text(
+                "\u274c Invalid value. Enter a number between 0.50 and 0.95 (e.g. <code>0.48</code>).",
+                parse_mode="HTML",
+            )
+            return
+        await queries.set_ml_down_threshold(threshold)
+        await update.message.reply_text(
+            f"\u2705 ML DOWN threshold set to <b>{threshold:.3f}</b>. Active on next signal check.",
             parse_mode="HTML",
             reply_markup=ml_menu(),
         )

@@ -244,7 +244,8 @@ def ml_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton("\U0001f504 Retrain", callback_data="ml_retrain"),
         ],
         [
-            InlineKeyboardButton("\u2699\ufe0f Set Threshold", callback_data="ml_set_threshold"),
+            InlineKeyboardButton("\u2699\ufe0f Set UP Threshold", callback_data="ml_set_threshold"),
+            InlineKeyboardButton("\u2699\ufe0f Set DOWN Threshold", callback_data="ml_set_down_threshold"),
         ],
         [InlineKeyboardButton("\U0001f519 Back to Menu", callback_data="cmd_menu")],
     ])
