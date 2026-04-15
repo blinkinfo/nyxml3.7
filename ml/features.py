@@ -7,9 +7,10 @@ Target semantics: 1 if the NEXT candle closes at or above its own open
 (close[i+1] >= open[i+1]), matching Polymarket's settlement logic
 (resolver.py: winner = "Up" if close_price >= open_price else "Down").
 
-32 features total: candle shape (7), volume (2), 15m context (3), 1h context (3),
+36 features total: candle shape (7), volume (2), 15m context (3), 1h context (3),
 funding (2), OHLCV pressure (5), time-of-day cyclical (4), volatility regime (2),
-momentum (4: rsi14, candle_streak, price_in_range, ema_cross_5m).
+momentum (4: rsi14, candle_streak, price_in_range, ema_cross_5m),
+structure (4: mtf_alignment, body_vs_range5, range_expansion, vwap_dist_20).
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ FEATURE_COLS = [
     "hour_sin", "hour_cos", "dow_sin", "dow_cos",  # cyclical time (replaces hour_utc, dow)
     "atr_percentile_24h", "vol_regime",
     "rsi14", "candle_streak", "price_in_range", "ema_cross_5m",  # momentum features
+    # structure features
+    "mtf_alignment", "body_vs_range5", "range_expansion", "vwap_dist_20",
 ]
 
 
@@ -306,6 +309,39 @@ def build_features(
     _ema9_5m  = df5["close"].ewm(span=9,  adjust=False).mean()
     _ema21_5m = df5["close"].ewm(span=21, adjust=False).mean()
     df5["ema_cross_5m"] = np.sign(_ema9_5m - _ema21_5m).shift(1)  # N-1 cross state
+
+    # -----------------------------------------------------------------------
+    # Structure features — all use shift(k>=1) for zero lookahead
+    # -----------------------------------------------------------------------
+
+    # mtf_alignment: product of N-1 5m body direction * 15m dir * 1h dir.
+    # All three inputs are already shift(1)-based (body_ratio_n1 uses shift(1),
+    # dir_15m/dir_1h are asof-merged against ts_n1 = timestamp.shift(1)).
+    # Result: +1 = all three TFs aligned, -1 = alternating, 0 = any flat.
+    df5["mtf_alignment"] = np.sign(df5["body_ratio_n1"]) * df5["dir_15m"] * df5["dir_1h"]
+
+    # body_vs_range5: |body_n1| normalised by the 5-candle range ending at N-1.
+    # 5-bar range = max(high[i-1..i-5]) - min(low[i-1..i-5]) — shift(1).rolling(5)
+    # gives exactly that window at each row i with zero lookahead.
+    _5bar_high   = df5["high"].shift(1).rolling(5, min_periods=2).max()
+    _5bar_low    = df5["low"].shift(1).rolling(5, min_periods=2).min()
+    _5bar_range  = (_5bar_high - _5bar_low).clip(lower=1e-9)
+    df5["body_vs_range5"] = (df5["close"].shift(1) - df5["open"].shift(1)).abs() / _5bar_range
+
+    # range_expansion: current 5-bar range vs prior 5-bar range (6..10 candles back).
+    # shift(6).rolling(5) at row i = max/min of [i-6..i-10] — no overlap with current.
+    _prior_high  = df5["high"].shift(6).rolling(5, min_periods=2).max()
+    _prior_low   = df5["low"].shift(6).rolling(5, min_periods=2).min()
+    _prior_range = (_prior_high - _prior_low).clip(lower=1e-9)
+    df5["range_expansion"] = _5bar_range / _prior_range
+
+    # vwap_dist_20: (close_n1 - vwap_20) / atr5_n1.
+    # VWAP over the 20 candles ending at N-1: shift(1) before rolling ensures
+    # the window [i-1..i-20] — zero lookahead. Divided by ATR for scale invariance.
+    _cv_20  = (df5["close"].shift(1) * df5["volume"].shift(1)).rolling(20, min_periods=5).sum()
+    _v_20   = df5["volume"].shift(1).rolling(20, min_periods=5).sum().clip(lower=1e-9)
+    _vwap20 = _cv_20 / _v_20
+    df5["vwap_dist_20"] = (df5["close"].shift(1) - _vwap20) / atr5.shift(1).clip(lower=1e-9)
 
     # -----------------------------------------------------------------------
     # Target: 1 if next candle closes >= its own open (future label, NOT a feature)
@@ -590,10 +626,11 @@ def build_live_features(
         candle_streak = np.nan
 
     # price_in_range (live): where N-1 close sits within 20-candle range ending at N-1
+    # high_arr/low_arr/close_arr defined unconditionally so structure features can reuse them
+    high_arr  = df5["high"].values
+    low_arr   = df5["low"].values
+    close_arr = df5["close"].values
     if len(df5) >= 6:
-        high_arr = df5["high"].values
-        low_arr  = df5["low"].values
-        close_arr = df5["close"].values
         # N-1 close: index -2
         # 20-candle range ending at N-1 (inclusive): high/low of [-21:-1] or available
         window_hi = high_arr[max(0, len(high_arr)-21):-1]
@@ -617,8 +654,52 @@ def build_live_features(
         ema_cross_5m = np.nan
 
     # -----------------------------------------------------------------------
-    # Assemble final row — order MUST match FEATURE_COLS exactly (32 features)
+    # Structure features (live) — mirrors build_features() formulas exactly
     # -----------------------------------------------------------------------
+
+    # mtf_alignment (live): sign(body_ratio_n1) * dir_15m * dir_1h
+    mtf_alignment = float(np.sign(body_ratio_n1) * dir_15m * dir_1h) if not (
+        np.isnan(body_ratio_n1) or np.isnan(dir_15m) or np.isnan(dir_1h)
+    ) else np.nan
+
+    # body_vs_range5 (live): |body_n1| / 5-bar range ending at N-1
+    # Window: high/low of last 5 closed candles = indices [-6:-1]
+    _n5_high = high_arr[max(0, len(high_arr)-6):-1]  # up to 5 values ending at N-1
+    _n5_low  = low_arr[max(0, len(low_arr)-6):-1]
+    if len(_n5_high) >= 2:
+        _5bar_range_live = float(np.max(_n5_high) - np.min(_n5_low))
+        _5bar_range_live = max(_5bar_range_live, 1e-9)
+        _body_n1_abs = abs(float(df5["close"].iloc[-2]) - float(df5["open"].iloc[-2]))
+        body_vs_range5 = _body_n1_abs / _5bar_range_live
+    else:
+        body_vs_range5 = np.nan
+
+    # range_expansion (live): 5-bar range N-1 / 5-bar range 6..10 candles back
+    # Prior window: high/low of indices [-11:-6] (candles i-6 through i-10)
+    _pr_high = high_arr[max(0, len(high_arr)-11):-6] if len(high_arr) >= 7 else np.array([])
+    _pr_low  = low_arr[max(0, len(low_arr)-11):-6]   if len(low_arr) >= 7 else np.array([])
+    if len(_pr_high) >= 2 and len(_n5_high) >= 2:
+        _prior_range_live = float(np.max(_pr_high) - np.min(_pr_low))
+        _prior_range_live = max(_prior_range_live, 1e-9)
+        range_expansion = _5bar_range_live / _prior_range_live
+    else:
+        range_expansion = np.nan
+
+    # vwap_dist_20 (live): (close_n1 - vwap_20) / atr5_n1
+    # VWAP over last 20 closed candles ending at N-1 = indices [-21:-1]
+    if len(df5) >= 6:
+        _cv_arr  = (df5["close"] * df5["volume"]).values
+        _v_arr   = df5["volume"].values
+        _cv_win  = _cv_arr[max(0, len(_cv_arr)-21):-1]   # up to 20 values ending at N-1
+        _v_win   = _v_arr[max(0, len(_v_arr)-21):-1]
+        if len(_cv_win) >= 5 and float(np.sum(_v_win)) > 1e-9:
+            _vwap20_live = float(np.sum(_cv_win)) / float(np.sum(_v_win))
+            vwap_dist_20 = (float(df5["close"].iloc[-2]) - _vwap20_live) / max(atr5_val, 1e-9)
+        else:
+            vwap_dist_20 = np.nan
+    else:
+        vwap_dist_20 = np.nan
+
     row = np.array([[
         body_ratio_n1, body_ratio_n2, body_ratio_n3,
         upper_wick_n1, upper_wick_n2,
@@ -631,6 +712,7 @@ def build_live_features(
         hour_sin, hour_cos, dow_sin, dow_cos,
         atr_percentile_24h, vol_regime,
         rsi14, candle_streak, price_in_range, ema_cross_5m,
+        mtf_alignment, body_vs_range5, range_expansion, vwap_dist_20,
     ]], dtype=np.float64)
 
     nan_features = [FEATURE_COLS[i] for i in range(len(FEATURE_COLS)) if np.isnan(row[0][i])]

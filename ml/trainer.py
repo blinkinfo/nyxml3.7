@@ -39,9 +39,9 @@ LGBM_PARAMS = {
     "objective": "binary",
     "metric": "binary_logloss",
     "learning_rate": 0.05,
-    "num_leaves": 63,
+    "num_leaves": 31,         # reduced from 63 — smaller trees generalise better on ~26k samples
     "max_depth": -1,
-    "min_child_samples": 50,
+    "min_child_samples": 20,  # reduced from 50 — allows finer splits, uses more training data
     "feature_fraction": 0.8,
     "bagging_fraction": 0.8,
     "bagging_freq": 5,
@@ -51,8 +51,8 @@ LGBM_PARAMS = {
     "n_jobs": 1,  # 1 avoids multiprocess overhead on single-vCPU Railway instances
 }
 
-NUM_BOOST_ROUND = 1000
-EARLY_STOPPING_ROUNDS = 50
+NUM_BOOST_ROUND = 2000        # increased from 1000 — gives early stopping more room to find optimum
+EARLY_STOPPING_ROUNDS = 100   # increased from 50 — more patient stopping, avoids premature cutoff
 
 # ---------------------------------------------------------------------------
 # Walk-forward validation constants
